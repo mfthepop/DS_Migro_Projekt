@@ -14,7 +14,7 @@ CIRCLE_COLORS = ["crimson", "blue", "green", "purple", "orange", "darkred", "cad
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("supermarkt_Migros.csv")
+    df = pd.read_csv("Migros_and_competitors_stores_CH.csv")
     # Set default radius if the column is missing in CSV
     if "radius_km" not in df.columns:
         df["radius_km"] = 5.0
@@ -103,4 +103,4 @@ try:
   
 
 except FileNotFoundError:
-    st.error("Please ensure 'locations.csv' is present in your app directory.")
+    st.error("Please ensure 'Migros_and_competitors_stores_CH.csv' is present in your app directory.")
