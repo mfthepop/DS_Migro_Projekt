@@ -6,46 +6,53 @@ import pydeck as pdk
 import streamlit as st
 
 
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
 BASE_DIR = Path(__file__).resolve().parent
 
-STORE_FILE = BASE_DIR / "Migros_and_competitors_stores_CH.csv"
-POPULATION_FILE = BASE_DIR / "population_cells.parquet"
+STORE_FILE = (
+    BASE_DIR /
+    "Migros_and_competitors_stores_CH.csv"
+)
+
+POPULATION_FILE = (
+    BASE_DIR /
+    "population_cells.parquet"
+)
 
 
 st.set_page_config(
-    page_title="Multi-Radius Location Viewer",
+    page_title="Migros Location Opportunity",
     layout="wide",
 )
 
-st.title("📍 Population Coverage Viewer")
+st.title("📍 Migros Location Opportunity Analysis")
 
 
-# ---------------------------------------------------------
-# Load data
-# ---------------------------------------------------------
+# =========================================================
+# LOAD STORES
+# =========================================================
 
 @st.cache_data(show_spinner=False)
 def load_stores():
 
     df = pd.read_csv(STORE_FILE)
 
-    if "radius_km" not in df.columns:
-        df["radius_km"] = 5.0
-
-    required = [
+    required = {
         "display_name",
         "latitude",
         "longitude",
-    ]
+        "company",
+    }
 
-    missing = [
-        col for col in required
-        if col not in df.columns
-    ]
+    missing = required - set(df.columns)
 
     if missing:
         raise ValueError(
-            f"Missing columns: {missing}"
+            "Missing store columns: "
+            + ", ".join(sorted(missing))
         )
 
     df["latitude"] = pd.to_numeric(
@@ -60,49 +67,58 @@ def load_stores():
 
     df = df.dropna(
         subset=[
+            "display_name",
             "latitude",
             "longitude",
+            "company",
         ]
     )
 
     return df.reset_index(drop=True)
 
+
+# =========================================================
+# LOAD POPULATION
+# =========================================================
 
 @st.cache_data(show_spinner=False)
 def load_population():
 
-    df = pd.read_parquet(POPULATION_FILE)
+    if not POPULATION_FILE.exists():
 
-    required = [
+        raise FileNotFoundError(
+            "population_cells.parquet is missing."
+        )
+
+    df = pd.read_parquet(
+        POPULATION_FILE
+    )
+
+    required = {
         "latitude",
         "longitude",
         "population",
-    ]
+    }
 
-    missing = [
-        col for col in required
-        if col not in df.columns
-    ]
+    missing = required - set(df.columns)
 
     if missing:
+
         raise ValueError(
-            f"Missing population columns: {missing}"
+            "Missing population columns: "
+            + ", ".join(sorted(missing))
         )
 
-    df["latitude"] = pd.to_numeric(
-        df["latitude"],
-        errors="coerce",
-    )
+    for column in [
+        "latitude",
+        "longitude",
+        "population",
+    ]:
 
-    df["longitude"] = pd.to_numeric(
-        df["longitude"],
-        errors="coerce",
-    )
-
-    df["population"] = pd.to_numeric(
-        df["population"],
-        errors="coerce",
-    ).fillna(0)
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
 
     df = df.dropna(
         subset=[
@@ -111,42 +127,152 @@ def load_population():
         ]
     )
 
-    df = df[df["population"] > 0]
+    df = df[
+        df["population"] > 0
+    ]
 
     return df.reset_index(drop=True)
 
 
-stores = load_stores()
-population = load_population()
+# =========================================================
+# LOAD DATA
+# =========================================================
+
+try:
+
+    stores = load_stores()
+    population = load_population()
+
+except Exception as exc:
+
+    st.error(str(exc))
+    st.stop()
+
+
+# =========================================================
+# SIDEBAR SETTINGS
+# =========================================================
+
+st.sidebar.header(
+    "⚙️ Analysis Settings"
+)
 
 
 # ---------------------------------------------------------
 # Radius
 # ---------------------------------------------------------
 
-st.sidebar.header("⚙️ Coverage Settings")
-
 radius_km = st.sidebar.slider(
-    "Radius for all locations",
+    "Competitor radius",
     min_value=0.5,
     max_value=20.0,
-    value=5.0,
+    value=1.0,
     step=0.5,
+)
+
+radius_m = radius_km * 1000
+
+
+# ---------------------------------------------------------
+# Migros / Denner setting
+# ---------------------------------------------------------
+
+setting_migros_only = st.sidebar.checkbox(
+    "Migros only",
+    value=True,
 )
 
 
 # ---------------------------------------------------------
-# Calculate population coverage
+# Competitor setting
 # ---------------------------------------------------------
 
-def find_uncovered_population(
+setting_all_competitors = st.sidebar.checkbox(
+    "All competitors",
+    value=True,
+)
+
+
+# ---------------------------------------------------------
+# Minimum distance between Top 10
+# ---------------------------------------------------------
+
+min_distance_km = st.sidebar.slider(
+    "Minimum distance between Top 10 points",
+    min_value=0.5,
+    max_value=10.0,
+    value=2.0,
+    step=0.5,
+)
+
+
+# =========================================================
+# MAIN COMPANY
+# =========================================================
+
+if setting_migros_only:
+
+    main_company = [
+        "Migros"
+    ]
+
+else:
+
+    main_company = [
+        "Migros",
+        "Denner",
+    ]
+
+
+# =========================================================
+# COMPETITORS
+# =========================================================
+
+if setting_all_competitors:
+
+    competition_companies = [
+        "Coop",
+        "ALDI",
+        "Lidl",
+        "SPAR",
+        "Volg",
+    ]
+
+    if setting_migros_only:
+
+        competition_companies.append(
+            "Denner"
+        )
+
+else:
+
+    competition_companies = [
+        "Coop"
+    ]
+
+
+# =========================================================
+# OPPORTUNITY CALCULATION
+# =========================================================
+
+def calculate_opportunity(
     population,
     stores,
-    radius_km,
+    main_company,
+    competition_companies,
+    radius_m,
 ):
     """
-    Return only population cells that are outside
-    the radius of EVERY store.
+    Calculate:
+
+        opportunity =
+            population
+            * nearest_migros_distance_km
+            / (1 + competitor_count)
+
+    All spatial calculations are performed
+    using latitude/longitude with a vectorized
+    haversine calculation.
     """
 
     pop_lat = np.radians(
@@ -157,32 +283,47 @@ def find_uncovered_population(
         population["longitude"].to_numpy()
     )
 
-    store_lat = np.radians(
-        stores["latitude"].to_numpy()
+    # -----------------------------------------------------
+    # MAIN STORES
+    # -----------------------------------------------------
+
+    main_stores = stores[
+        stores["company"].isin(
+            main_company
+        )
+    ]
+
+    if main_stores.empty:
+
+        raise ValueError(
+            "No main-company stores found."
+        )
+
+    main_lat = np.radians(
+        main_stores["latitude"].to_numpy()
     )
 
-    store_lon = np.radians(
-        stores["longitude"].to_numpy()
+    main_lon = np.radians(
+        main_stores["longitude"].to_numpy()
     )
 
-    radius = radius_km * 1000
 
-    earth_radius = 6_371_000
+    # -----------------------------------------------------
+    # DISTANCE TO NEAREST MIGROS
+    # -----------------------------------------------------
 
-    # Start by assuming every population point
-    # is uncovered.
-    covered = np.zeros(
+    nearest_distance = np.full(
         len(population),
-        dtype=bool,
+        np.inf,
     )
 
-    # Process stores one by one.
-    #
-    # This avoids creating one enormous
-    # population × store matrix.
+    earth_radius_m = 6_371_000.0
+
+    # Calculate nearest store distance
+    # without a Python loop over population cells.
     for lat, lon in zip(
-        store_lat,
-        store_lon,
+        main_lat,
+        main_lon,
     ):
 
         dlat = pop_lat - lat
@@ -190,86 +331,340 @@ def find_uncovered_population(
 
         a = (
             np.sin(dlat / 2) ** 2
-            + np.cos(lat)
+            +
+            np.cos(lat)
             * np.cos(pop_lat)
             * np.sin(dlon / 2) ** 2
         )
 
+        a = np.clip(
+            a,
+            0,
+            1,
+        )
+
         distance = (
             2
-            * earth_radius
+            * earth_radius_m
             * np.arcsin(
                 np.sqrt(a)
             )
         )
 
-        covered |= distance <= radius
+        nearest_distance = np.minimum(
+            nearest_distance,
+            distance,
+        )
 
-        # Once everything is covered,
-        # no need to process remaining stores.
-        if covered.all():
+
+    # -----------------------------------------------------
+    # COMPETITORS
+    # -----------------------------------------------------
+
+    competitors = stores[
+        stores["company"].isin(
+            competition_companies
+        )
+    ]
+
+    competitor_lat = np.radians(
+        competitors["latitude"].to_numpy()
+    )
+
+    competitor_lon = np.radians(
+        competitors["longitude"].to_numpy()
+    )
+
+
+    # -----------------------------------------------------
+    # COUNT COMPETITORS WITHIN RADIUS
+    # -----------------------------------------------------
+
+    competitor_count = np.zeros(
+        len(population),
+        dtype=np.int32,
+    )
+
+
+    for lat, lon in zip(
+        competitor_lat,
+        competitor_lon,
+    ):
+
+        dlat = pop_lat - lat
+        dlon = pop_lon - lon
+
+        a = (
+            np.sin(dlat / 2) ** 2
+            +
+            np.cos(lat)
+            * np.cos(pop_lat)
+            * np.sin(dlon / 2) ** 2
+        )
+
+        a = np.clip(
+            a,
+            0,
+            1,
+        )
+
+        distance = (
+            2
+            * earth_radius_m
+            * np.arcsin(
+                np.sqrt(a)
+            )
+        )
+
+        competitor_count += (
+            distance <= radius_m
+        )
+
+
+    # -----------------------------------------------------
+    # RESULT
+    # -----------------------------------------------------
+
+    result = population.copy()
+
+    result["migros_distance_m"] = (
+        nearest_distance
+    )
+
+    result["migros_distance_km"] = (
+        nearest_distance / 1000
+    )
+
+    result["competitor_count"] = (
+        competitor_count
+    )
+
+
+    # -----------------------------------------------------
+    # YOUR EXACT SCORE
+    # -----------------------------------------------------
+
+    result["opportunity"] = (
+        result["population"]
+        * result["migros_distance_km"]
+        / (
+            1
+            + result["competitor_count"]
+        )
+    )
+
+
+    return result
+
+
+# =========================================================
+# CALCULATE OPPORTUNITIES
+# =========================================================
+
+with st.spinner(
+    "Calculating location opportunities..."
+):
+
+    opportunities = calculate_opportunity(
+        population=population,
+        stores=stores,
+        main_company=main_company,
+        competition_companies=competition_companies,
+        radius_m=radius_m,
+    )
+
+
+# =========================================================
+# SELECT TOP 10
+# =========================================================
+
+def select_top_10(
+    opportunities,
+    min_distance_km,
+    number_of_points=10,
+):
+
+    candidates = (
+        opportunities
+        .sort_values(
+            "opportunity",
+            ascending=False,
+        )
+        .copy()
+    )
+
+    # Convert coordinates to radians
+    lat = np.radians(
+        candidates["latitude"].to_numpy()
+    )
+
+    lon = np.radians(
+        candidates["longitude"].to_numpy()
+    )
+
+    earth_radius_km = 6371.0
+
+    selected_indices = []
+
+
+    # -----------------------------------------------------
+    # GREEDY SELECTION
+    # -----------------------------------------------------
+
+    for i in range(
+        len(candidates)
+    ):
+
+        if len(selected_indices) >= (
+            number_of_points
+        ):
             break
 
-    return population.loc[
-        ~covered
-    ].copy()
+
+        # First candidate is automatically selected
+        if not selected_indices:
+
+            selected_indices.append(i)
+
+            continue
 
 
-uncovered_population = find_uncovered_population(
-    population,
-    stores,
-    radius_km,
+        selected_lat = lat[
+            selected_indices
+        ]
+
+        selected_lon = lon[
+            selected_indices
+        ]
+
+
+        # Distance from current candidate
+        # to all already-selected candidates
+
+        dlat = (
+            selected_lat
+            - lat[i]
+        )
+
+        dlon = (
+            selected_lon
+            - lon[i]
+        )
+
+
+        a = (
+            np.sin(dlat / 2) ** 2
+            +
+            np.cos(lat[i])
+            * np.cos(selected_lat)
+            * np.sin(dlon / 2) ** 2
+        )
+
+
+        distances = (
+            2
+            * earth_radius_km
+            * np.arcsin(
+                np.sqrt(
+                    np.clip(
+                        a,
+                        0,
+                        1,
+                    )
+                )
+            )
+        )
+
+
+        # Candidate must be far enough
+        # from EVERY selected point
+
+        if np.all(
+            distances >= min_distance_km
+        ):
+
+            selected_indices.append(i)
+
+
+    top_10 = (
+        candidates
+        .iloc[selected_indices]
+        .copy()
+    )
+
+
+    top_10 = (
+        top_10
+        .sort_values(
+            "opportunity",
+            ascending=False,
+        )
+        .reset_index(drop=True)
+    )
+
+
+    top_10["rank"] = (
+        top_10.index + 1
+    )
+
+
+    return top_10
+
+
+top_10 = select_top_10(
+    opportunities,
+    min_distance_km,
 )
 
-# ---------------------------------------------------------
-# Top 10 most populated uncovered areas
-# ---------------------------------------------------------
 
-top_10_uncovered = (
-    uncovered_population
-    .nlargest(10, "population")
-    .copy()
+# =========================================================
+# STATISTICS
+# =========================================================
+
+total_population = (
+    population["population"]
+    .sum()
 )
 
-top_10_uncovered["rank"] = range(
-    1,
-    len(top_10_uncovered) + 1
+uncovered_population = (
+    opportunities[
+        opportunities["migros_distance_km"]
+        > radius_km
+    ]
 )
 
-top_10_uncovered["label"] = (
-    "Top "
-    + top_10_uncovered["rank"].astype(str)
-    + " — "
-    + top_10_uncovered["population"]
+
+uncovered_population_total = (
+    uncovered_population["population"]
+    .sum()
+)
+
+
+# =========================================================
+# TOP 10 MAP DATA
+# =========================================================
+
+top_10["display"] = (
+    "Rank "
+    + top_10["rank"].astype(str)
+    + " | "
+    + top_10["population"]
         .map(lambda x: f"{x:,.0f}")
     + " people"
 )
 
-# ---------------------------------------------------------
-# Store circles
-# ---------------------------------------------------------
 
-store_map = stores.copy()
+# =========================================================
+# MAP LAYERS
+# =========================================================
 
-store_map["radius_m"] = radius_km * 1000
-
-store_map["tooltip"] = store_map[
-    "display_name"
-].astype(str) + (
-    f" — Radius: {radius_km:.1f} km"
-)
-
-
-# ---------------------------------------------------------
 # Population heatmap
-# ---------------------------------------------------------
-
 population_layer = pdk.Layer(
     "HeatmapLayer",
 
-    data=uncovered_population,
+    data=opportunities,
 
-    id="uncovered-population",
+    id="population-heatmap",
 
     get_position=[
         "longitude",
@@ -284,18 +679,15 @@ population_layer = pdk.Layer(
 
     threshold=0.03,
 
-    opacity=0.75,
+    opacity=0.65,
 )
 
 
-# ---------------------------------------------------------
-# Radius circles
-# ---------------------------------------------------------
-
+# Store radius
 radius_layer = pdk.Layer(
     "ScatterplotLayer",
 
-    data=store_map,
+    data=stores,
 
     id="store-radii",
 
@@ -304,13 +696,13 @@ radius_layer = pdk.Layer(
         "latitude",
     ],
 
-    get_radius="radius_m",
+    get_radius=radius_m,
 
     get_fill_color=[
         220,
         20,
         60,
-        35,
+        30,
     ],
 
     get_line_color=[
@@ -330,14 +722,11 @@ radius_layer = pdk.Layer(
 )
 
 
-# ---------------------------------------------------------
 # Store markers
-# ---------------------------------------------------------
-
-marker_layer = pdk.Layer(
+store_marker_layer = pdk.Layer(
     "ScatterplotLayer",
 
-    data=store_map,
+    data=stores,
 
     id="store-markers",
 
@@ -349,9 +738,9 @@ marker_layer = pdk.Layer(
     get_radius=100,
 
     get_fill_color=[
-        220,
-        20,
-        20,
+        200,
+        30,
+        30,
         255,
     ],
 
@@ -376,23 +765,23 @@ marker_layer = pdk.Layer(
 )
 
 
-# ---------------------------------------------------------
-# Top 10 uncovered population points
-# ---------------------------------------------------------
+# =========================================================
+# TOP 10 HIGHLIGHT LAYER
+# =========================================================
 
 top_10_layer = pdk.Layer(
     "ScatterplotLayer",
 
-    data=top_10_uncovered,
+    data=top_10,
 
-    id="top-10-uncovered",
+    id="top-10-opportunities",
 
     get_position=[
         "longitude",
         "latitude",
     ],
 
-    get_radius=500,
+    get_radius=700,
 
     get_fill_color=[
         255,
@@ -408,9 +797,9 @@ top_10_layer = pdk.Layer(
         255,
     ],
 
-    radius_min_pixels=8,
+    radius_min_pixels=9,
 
-    radius_max_pixels=20,
+    radius_max_pixels=22,
 
     line_width_min_pixels=3,
 
@@ -423,19 +812,24 @@ top_10_layer = pdk.Layer(
     auto_highlight=True,
 )
 
-# ---------------------------------------------------------
-# Map
-# ---------------------------------------------------------
 
-center_lat = stores["latitude"].mean()
-center_lon = stores["longitude"].mean()
-
+# =========================================================
+# MAP
+# =========================================================
 
 view_state = pdk.ViewState(
-    latitude=float(center_lat),
-    longitude=float(center_lon),
+    latitude=float(
+        stores["latitude"].mean()
+    ),
+
+    longitude=float(
+        stores["longitude"].mean()
+    ),
+
     zoom=8,
+
     pitch=0,
+
     bearing=0,
 )
 
@@ -444,25 +838,38 @@ deck = pdk.Deck(
     layers=[
         population_layer,
         radius_layer,
-        marker_layer,
+        store_marker_layer,
         top_10_layer,
     ],
+
     initial_view_state=view_state,
 
     tooltip={
-        "text": "{display_name}"
+        "html":
+            "<b>{display}</b><br/>"
+            "Population: {population}<br/>"
+            "Migros distance: "
+            "{migros_distance_km} km<br/>"
+            "Competitors: "
+            "{competitor_count}<br/>"
+            "Opportunity: "
+            "{opportunity}"
     },
 )
 
 
-# ---------------------------------------------------------
-# Display
-# ---------------------------------------------------------
+# =========================================================
+# DISPLAY
+# =========================================================
 
 col1, col2 = st.columns(
     [3, 1]
 )
 
+
+# ---------------------------------------------------------
+# MAP
+# ---------------------------------------------------------
 
 with col1:
 
@@ -473,38 +880,24 @@ with col1:
     )
 
 
+# ---------------------------------------------------------
+# INFORMATION PANEL
+# ---------------------------------------------------------
+
 with col2:
 
-    st.subheader("📊 Coverage")
-
-    total_population = population[
-        "population"
-    ].sum()
-
-    uncovered = uncovered_population[
-        "population"
-    ].sum()
-
-    covered = (
-        total_population
-        - uncovered
-    )
-
-    coverage_percent = (
-        covered / total_population * 100
-        if total_population > 0
-        else 0
-    )
-
-    uncovered_percent = (
-        uncovered / total_population * 100
-        if total_population > 0
-        else 0
+    st.subheader(
+        "📊 Analysis"
     )
 
     st.metric(
-        "Radius",
+        "Competitor radius",
         f"{radius_km:.1f} km",
+    )
+
+    st.metric(
+        "Population cells",
+        f"{len(population):,}",
     )
 
     st.metric(
@@ -513,69 +906,59 @@ with col2:
     )
 
     st.metric(
-        "Covered population",
-        f"{covered:,.0f}",
+        "Top 10 locations",
+        str(len(top_10)),
     )
 
-    st.metric(
-        "Uncovered population",
-        f"{uncovered:,.0f}",
-    )
-
-    st.metric(
-        "Coverage",
-        f"{coverage_percent:.1f}%",
-    )
-
-    st.metric(
-        "Uncovered",
-        f"{uncovered_percent:.1f}%",
-    )
 
     st.divider()
 
-    st.subheader("Locations")
-
-    st.dataframe(
-        store_map[
-            [
-                "display_name",
-                "latitude",
-                "longitude",
-            ]
-        ].rename(
-            columns={
-                "display_name": "Location",
-                "latitude": "Latitude",
-                "longitude": "Longitude",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.divider()
 
     st.subheader(
-        "🎯 Top 10 Uncovered Areas"
+        "🎯 Top 10 Opportunities"
     )
 
-    st.dataframe(
-        top_10_uncovered[
-            [
-                "rank",
-                "latitude",
-                "longitude",
-                "population",
+    if top_10.empty:
+
+        st.warning(
+            "No suitable locations found."
+        )
+
+    else:
+
+        display_table = (
+            top_10[
+                [
+                    "rank",
+                    "population",
+                    "migros_distance_km",
+                    "competitor_count",
+                    "opportunity",
+                ]
             ]
-    ].rename(
-        columns={
-            "rank": "Rank",
-            "latitude": "Latitude",
-            "longitude": "Longitude",
-            "population": "Population",
-        }
-    ),
-    use_container_width=True,
-    hide_index=True,
-)
+            .rename(
+                columns={
+                    "rank": "Rank",
+                    "population": "Population",
+                    "migros_distance_km":
+                        "Migros distance (km)",
+                    "competitor_count":
+                        "Competitors",
+                    "opportunity":
+                        "Opportunity",
+                }
+            )
+        )
+
+
+        st.dataframe(
+            display_table,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+    st.caption(
+        f"Top locations are at least "
+        f"{min_distance_km:.1f} km apart."
+    )
