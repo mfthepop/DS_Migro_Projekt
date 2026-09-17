@@ -68,12 +68,12 @@ try:
         # ).add_to(m)
 
         #Add Marker Pin at Center
-        folium.Marker(
-            location=[row["latitude"], row["longitude"]],
-            popup=f"<b>{row['display_name']}</b><br>Radius: {row['radius_km']} km",
-            tooltip=f"{row['display_name']} ({row['radius_km']} km radius)",
-            icon=folium.Icon(color="red", icon="info-sign")
-        ).add_to(m)
+        # folium.Marker(
+        #     location=[row["latitude"], row["longitude"]],
+        #     popup=f"<b>{row['display_name']}</b><br>Radius: {row['radius_km']} km",
+        #     tooltip=f"{row['display_name']} ({row['radius_km']} km radius)",
+        #     icon=folium.Icon(color="red", icon="info-sign")
+        # ).add_to(m)
 
     #agg_plot_reset = agg_plot.reset_index()
     # folium.Choropleth(
