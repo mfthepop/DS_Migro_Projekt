@@ -1,224 +1,421 @@
-"""Multi-Radius Location Viewer.
-
-Optimised for Streamlit Community Cloud and Heroku:
-  * the CSV is parsed once and cached
-  * the Folium map is built once per (data, radius, view) combination and cached
-    as a plain HTML string
-  * the HTML is injected with components.html, so panning/zooming the map never
-    triggers a Streamlit rerun
-  * all points are rendered as two GeoJSON layers instead of 2*N Python objects
-"""
-
-from __future__ import annotations
-
-import json
 from pathlib import Path
+import math
 
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
-import streamlit.components.v1 as components
-
-st.set_page_config(page_title="Multi-Radius Location Viewer", layout="wide")
-
-DATA_FILE = Path(__file__).with_name("Migros_and_competitors_stores_CH.csv")
-DEFAULT_RADIUS_KM = 5.0
-MAP_HEIGHT = 560
-CIRCLE_COLORS = [
-    "crimson", "blue", "green", "purple", "orange", "darkred", "cadetblue",
-]
-
-# --------------------------------------------------------------------------- #
-# Data
-# --------------------------------------------------------------------------- #
 
 
-@st.cache_data(show_spinner="Loading stores…")
-def load_data(path: str, mtime: float) -> pd.DataFrame:
-    """Read the store CSV. `mtime` is only part of the cache key."""
-    df = pd.read_csv(
-        path,
-        dtype={"display_name": "string"},
-        engine="pyarrow" if _has_pyarrow() else "c",
-    )
+BASE_DIR = Path(__file__).resolve().parent
 
-    missing = {"display_name", "latitude", "longitude"} - set(df.columns)
-    if missing:
-        raise ValueError(f"CSV is missing required column(s): {sorted(missing)}")
+STORE_FILE = BASE_DIR / "Migros_and_competitors_stores_CH.csv"
+POPULATION_FILE = BASE_DIR / "population_cells.parquet"
 
-    if "radius_km" not in df.columns:
-        df["radius_km"] = DEFAULT_RADIUS_KM
-
-    # Vectorised cleanup — no iterrows anywhere in this file.
-    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
-    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
-    df["radius_km"] = pd.to_numeric(df["radius_km"], errors="coerce").fillna(
-        DEFAULT_RADIUS_KM
-    )
-    df = df.dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
-
-    df["color"] = [CIRCLE_COLORS[i % len(CIRCLE_COLORS)] for i in range(len(df))]
-    return df
-
-
-def _has_pyarrow() -> bool:
-    try:
-        import pyarrow  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-# --------------------------------------------------------------------------- #
-# Map
-# --------------------------------------------------------------------------- #
-
-
-def to_geojson(df: pd.DataFrame) -> str:
-    """Build a FeatureCollection as a JSON string (a stable cache key)."""
-    features = [
-        {
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [lon, lat]},
-            "properties": {
-                "display_name": name,
-                "radius_km": round(float(km), 2),
-                "radius_m": float(km) * 1000.0,
-                "color": color,
-            },
-        }
-        for name, lat, lon, km, color in zip(
-            df["display_name"].astype(str),
-            df["latitude"],
-            df["longitude"],
-            df["radius_km"],
-            df["color"],
-        )
-    ]
-    return json.dumps({"type": "FeatureCollection", "features": features})
-
-
-@st.cache_data(show_spinner="Rendering map…", max_entries=8)
-def build_map_html(geojson_str: str, height: int) -> str:
-    """Return fully rendered Leaflet HTML. Cached on the GeoJSON payload."""
-    import folium  # imported lazily so a cache hit costs nothing
-
-    data = json.loads(geojson_str)
-    coords = [f["geometry"]["coordinates"] for f in data["features"]]
-    lons = [c[0] for c in coords]
-    lats = [c[1] for c in coords]
-
-    m = folium.Map(
-        tiles="OpenStreetMap",  # CartoDB basemaps now need an API key
-        prefer_canvas=True,  # canvas renderer: much faster above ~500 shapes
-        control_scale=True,
-    )
-    if coords:
-        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
-    else:
-        m.location = [46.8, 8.23]  # Switzerland
-        m.zoom_start = 8
-
-    tooltip_fields = ["display_name", "radius_km"]
-
-    # Layer 1: catchment circles (metres, so they scale with zoom).
-    folium.GeoJson(
-        data,
-        name="Radius",
-        marker=folium.Circle(fill=True, fill_opacity=0.15, weight=1),
-        style_function=lambda feat: {
-            "radius": feat["properties"]["radius_m"],
-            "color": feat["properties"]["color"],
-            "fillColor": feat["properties"]["color"],
-        },
-        tooltip=folium.GeoJsonTooltip(
-            fields=tooltip_fields, aliases=["Store", "Radius (km)"]
-        ),
-    ).add_to(m)
-
-    # Layer 2: centre dots. CircleMarker instead of folium.Icon — an Icon is a
-    # DOM element per store, a CircleMarker is a canvas draw call.
-    folium.GeoJson(
-        data,
-        name="Stores",
-        marker=folium.CircleMarker(
-            radius=4, color="#111", weight=1, fill=True, fill_color="#fff",
-            fill_opacity=1,
-        ),
-        tooltip=folium.GeoJsonTooltip(
-            fields=tooltip_fields, aliases=["Store", "Radius (km)"]
-        ),
-        popup=folium.GeoJsonPopup(
-            fields=tooltip_fields, aliases=["Store", "Radius (km)"]
-        ),
-    ).add_to(m)
-
-    folium.LayerControl(collapsed=True).add_to(m)
-
-    m.get_root().height = f"{height}px"
-    return m.get_root().render()
-
-
-# --------------------------------------------------------------------------- #
-# App
-# --------------------------------------------------------------------------- #
+st.set_page_config(
+    page_title="Multi-Radius Location Viewer",
+    layout="wide",
+)
 
 st.title("📍 Multi-Radius Location Viewer")
 
-if not DATA_FILE.exists():
-    st.error(f"'{DATA_FILE.name}' is missing from the app directory.")
+
+CIRCLE_COLORS = [
+    [220, 20, 60, 45],
+    [30, 90, 200, 45],
+    [40, 160, 80, 45],
+    [130, 60, 180, 45],
+    [240, 140, 20, 45],
+    [170, 30, 30, 45],
+    [40, 150, 170, 45],
+]
+
+POPULATION_COLORS = [
+    [255, 255, 204],
+    [255, 237, 160],
+    [254, 217, 118],
+    [254, 178, 76],
+    [253, 141, 60],
+    [240, 59, 32],
+    [189, 0, 38],
+]
+
+
+@st.cache_data(show_spinner=False)
+def load_stores() -> pd.DataFrame:
+    df = pd.read_csv(STORE_FILE)
+
+    required = {
+        "display_name",
+        "latitude",
+        "longitude",
+    }
+
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            f"Missing columns: {', '.join(sorted(missing))}"
+        )
+
+    if "radius_km" not in df.columns:
+        df["radius_km"] = 5.0
+
+    for column in [
+        "latitude",
+        "longitude",
+        "radius_km",
+    ]:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+    df = df.dropna(
+        subset=[
+            "display_name",
+            "latitude",
+            "longitude",
+        ]
+    ).copy()
+
+    df["radius_km"] = (
+        df["radius_km"]
+        .fillna(5.0)
+        .clip(0.5, 20.0)
+    )
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def load_population() -> pd.DataFrame:
+
+    if not POPULATION_FILE.exists():
+        raise FileNotFoundError(
+            "population_cells.parquet is missing. "
+            "Run prepare_population.py first."
+        )
+
+    df = pd.read_parquet(POPULATION_FILE)
+
+    required = {
+        "latitude",
+        "longitude",
+        "population",
+    }
+
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            "Missing population columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    df = df[
+        [
+            "latitude",
+            "longitude",
+            "population",
+        ]
+    ].copy()
+
+    df["population"] = pd.to_numeric(
+        df["population"],
+        errors="coerce",
+    ).fillna(0)
+
+    df = df[df["population"] > 0]
+
+    return df.reset_index(drop=True)
+
+
+def build_view_state(df: pd.DataFrame) -> pdk.ViewState:
+
+    latitude = float(df["latitude"].mean())
+    longitude = float(df["longitude"].mean())
+
+    lat_span = (
+        df["latitude"].max()
+        - df["latitude"].min()
+    )
+
+    lon_span = (
+        df["longitude"].max()
+        - df["longitude"].min()
+    )
+
+    span = max(
+        float(lat_span),
+        float(lon_span),
+        0.05,
+    )
+
+    zoom = max(
+        5.0,
+        min(
+            13.0,
+            math.log2(360.0 / span) - 1.5,
+        ),
+    )
+
+    return pdk.ViewState(
+        latitude=latitude,
+        longitude=longitude,
+        zoom=zoom,
+        pitch=0,
+        bearing=0,
+    )
+
+
+try:
+    stores = load_stores()
+    population = load_population()
+
+except (FileNotFoundError, ValueError, OSError) as exc:
+    st.error(str(exc))
     st.stop()
 
-base = load_data(str(DATA_FILE), DATA_FILE.stat().st_mtime)
 
-with st.sidebar:
-    st.header("⚙️ Radius settings")
-    global_radius = st.slider(
-        "Radius for all stores (km)", 0.5, 20.0, DEFAULT_RADIUS_KM, 0.5
+# -----------------------------
+# Sidebar
+# -----------------------------
+
+st.sidebar.header("⚙️ Radius Settings")
+
+use_custom = st.sidebar.checkbox(
+    "Customize individual radii",
+    value=False,
+)
+
+
+if "radii" not in st.session_state:
+    st.session_state.radii = (
+        stores["radius_km"]
+        .astype(float)
+        .to_dict()
     )
-    customise = st.checkbox("Customise individual radiuses", value=False)
-    st.caption(f"{len(base):,} stores loaded")
 
-df = base.copy()
-df["radius_km"] = global_radius
 
-if customise:
-    # ONE widget for N rows instead of N sliders. Edits are kept in session
-    # state so they survive reruns.
-    st.subheader("✏️ Per-store radius")
-    edited = st.data_editor(
-        df[["display_name", "radius_km", "latitude", "longitude"]],
-        column_config={
-            "radius_km": st.column_config.NumberColumn(
-                "Radius (km)", min_value=0.5, max_value=20.0, step=0.5
-            ),
-            "display_name": st.column_config.TextColumn("Store", disabled=True),
-            "latitude": st.column_config.NumberColumn(disabled=True, format="%.5f"),
-            "longitude": st.column_config.NumberColumn(disabled=True, format="%.5f"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        height=320,
-        key="radius_editor",
+if use_custom:
+
+    with st.sidebar.form(
+        "radius_form",
+        border=False,
+    ):
+
+        proposed_radii = {}
+
+        for idx, row in stores.iterrows():
+
+            proposed_radii[idx] = st.slider(
+                f"{row['display_name']} (km)",
+                min_value=0.5,
+                max_value=20.0,
+                value=float(
+                    st.session_state.radii.get(
+                        idx,
+                        row["radius_km"],
+                    )
+                ),
+                step=0.5,
+                key=f"radius_slider_{idx}",
+            )
+
+        apply_radii = st.form_submit_button(
+            "Apply radii",
+            use_container_width=True,
+        )
+
+        if apply_radii:
+            st.session_state.radii = proposed_radii
+
+else:
+
+    st.session_state.radii = (
+        stores["radius_km"]
+        .astype(float)
+        .to_dict()
     )
-    df["radius_km"] = edited["radius_km"].to_numpy()
 
-col1, col2 = st.columns([3, 2], gap="medium")
+
+# -----------------------------
+# Store data
+# -----------------------------
+
+store_map = stores.copy()
+
+store_map["radius_km"] = [
+    st.session_state.radii.get(
+        idx,
+        float(row.radius_km),
+    )
+    for idx, row in store_map.iterrows()
+]
+
+store_map["radius_m"] = (
+    store_map["radius_km"] * 1000
+)
+
+store_map["color"] = [
+    CIRCLE_COLORS[
+        i % len(CIRCLE_COLORS)
+    ]
+    for i in range(len(store_map))
+]
+
+store_map["tooltip"] = store_map.apply(
+    lambda r:
+        f"{r['display_name']} — "
+        f"Radius: {r['radius_km']:.1f} km",
+    axis=1,
+)
+
+
+# -----------------------------
+# Population layer
+# -----------------------------
+
+population_layer = pdk.Layer(
+    "HeatmapLayer",
+    data=population,
+    id="population-heatmap",
+    get_position=[
+        "longitude",
+        "latitude",
+    ],
+    get_weight="population",
+    radius_pixels=20,
+    intensity=1.2,
+    threshold=0.03,
+    opacity=0.65,
+    color_range=POPULATION_COLORS,
+)
+
+
+# -----------------------------
+# Radius circles
+# -----------------------------
+
+radius_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=store_map,
+    id="store-radii",
+    get_position=[
+        "longitude",
+        "latitude",
+    ],
+    get_radius="radius_m",
+    get_fill_color="color",
+    get_line_color="color",
+    stroked=True,
+    filled=True,
+    line_width_min_pixels=2,
+    radius_min_pixels=2,
+    radius_max_pixels=1000,
+    pickable=True,
+)
+
+
+# -----------------------------
+# Store markers
+# -----------------------------
+
+marker_map = store_map.copy()
+
+marker_map["marker_color"] = [
+    [210, 25, 25, 240]
+] * len(marker_map)
+
+
+marker_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=marker_map,
+    id="store-markers",
+    get_position=[
+        "longitude",
+        "latitude",
+    ],
+    get_radius=80,
+    get_fill_color="marker_color",
+    get_line_color=[
+        255,
+        255,
+        255,
+        255,
+    ],
+    radius_min_pixels=5,
+    radius_max_pixels=14,
+    line_width_min_pixels=2,
+    stroked=True,
+    filled=True,
+    pickable=True,
+    auto_highlight=True,
+)
+
+
+# -----------------------------
+# Build map
+# -----------------------------
+
+deck = pdk.Deck(
+    layers=[
+        population_layer,
+        radius_layer,
+        marker_layer,
+    ],
+    initial_view_state=build_view_state(
+        store_map
+    ),
+    map_style=None,
+    tooltip={
+        "text": "{tooltip}"
+    },
+)
+
+
+# -----------------------------
+# Layout
+# -----------------------------
+
+col1, col2 = st.columns(
+    [3, 2]
+)
 
 with col1:
-    html = build_map_html(to_geojson(df), MAP_HEIGHT)
-    components.html(html, height=MAP_HEIGHT, scrolling=False)
+
+    st.pydeck_chart(
+        deck,
+        width="stretch",
+        height=600,
+    )
+
 
 with col2:
-    st.subheader("📋 Locations & radiuses")
-    st.dataframe(
-        df[["display_name", "radius_km", "latitude", "longitude"]],
-        hide_index=True,
-        use_container_width=True,
-        height=MAP_HEIGHT - 60,
+
+    st.subheader(
+        "📋 Locations & Radii"
     )
-    st.download_button(
-        "⬇️ Download current radiuses (CSV)",
-        df[["display_name", "radius_km", "latitude", "longitude"]].to_csv(index=False),
-        file_name="store_radiuses.csv",
-        mime="text/csv",
+
+    st.dataframe(
+        store_map[
+            [
+                "display_name",
+                "radius_km",
+                "latitude",
+                "longitude",
+            ]
+        ].rename(
+            columns={
+                "display_name": "Location",
+                "radius_km": "Radius (km)",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        f"{len(store_map):,} locations · "
+        f"{len(population):,} population cells"
     )
