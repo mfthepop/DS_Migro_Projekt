@@ -1,6 +1,0 @@
--r requirements.txt
-geopandas==1.0.1
-pyogrio==0.10.0
-shapely==2.0.6
-matplotlib==3.9.2
-pillow==10.4.0

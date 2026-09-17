@@ -1,5 +1,0 @@
-*.gpkg
-*.csv
-prepare_data.py
-requirements-dev.txt
-notebooks/

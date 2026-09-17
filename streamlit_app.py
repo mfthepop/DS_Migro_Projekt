@@ -1,6 +1,6 @@
 from pathlib import Path
-import math
 
+import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
@@ -11,411 +11,571 @@ BASE_DIR = Path(__file__).resolve().parent
 STORE_FILE = BASE_DIR / "Migros_and_competitors_stores_CH.csv"
 POPULATION_FILE = BASE_DIR / "population_cells.parquet"
 
+
 st.set_page_config(
     page_title="Multi-Radius Location Viewer",
     layout="wide",
 )
 
-st.title("📍 Multi-Radius Location Viewer")
+st.title("📍 Population Coverage Viewer")
 
 
-CIRCLE_COLORS = [
-    [220, 20, 60, 45],
-    [30, 90, 200, 45],
-    [40, 160, 80, 45],
-    [130, 60, 180, 45],
-    [240, 140, 20, 45],
-    [170, 30, 30, 45],
-    [40, 150, 170, 45],
-]
-
-POPULATION_COLORS = [
-    [255, 255, 204],
-    [255, 237, 160],
-    [254, 217, 118],
-    [254, 178, 76],
-    [253, 141, 60],
-    [240, 59, 32],
-    [189, 0, 38],
-]
-
+# ---------------------------------------------------------
+# Load data
+# ---------------------------------------------------------
 
 @st.cache_data(show_spinner=False)
-def load_stores() -> pd.DataFrame:
+def load_stores():
+
     df = pd.read_csv(STORE_FILE)
-
-    required = {
-        "display_name",
-        "latitude",
-        "longitude",
-    }
-
-    missing = required - set(df.columns)
-
-    if missing:
-        raise ValueError(
-            f"Missing columns: {', '.join(sorted(missing))}"
-        )
 
     if "radius_km" not in df.columns:
         df["radius_km"] = 5.0
 
-    for column in [
+    required = [
+        "display_name",
         "latitude",
         "longitude",
-        "radius_km",
-    ]:
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
+    ]
+
+    missing = [
+        col for col in required
+        if col not in df.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            f"Missing columns: {missing}"
         )
+
+    df["latitude"] = pd.to_numeric(
+        df["latitude"],
+        errors="coerce",
+    )
+
+    df["longitude"] = pd.to_numeric(
+        df["longitude"],
+        errors="coerce",
+    )
 
     df = df.dropna(
         subset=[
-            "display_name",
             "latitude",
             "longitude",
         ]
-    ).copy()
-
-    df["radius_km"] = (
-        df["radius_km"]
-        .fillna(5.0)
-        .clip(0.5, 20.0)
     )
 
     return df.reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
-def load_population() -> pd.DataFrame:
-
-    if not POPULATION_FILE.exists():
-        raise FileNotFoundError(
-            "population_cells.parquet is missing. "
-            "Run prepare_population.py first."
-        )
+def load_population():
 
     df = pd.read_parquet(POPULATION_FILE)
 
-    required = {
+    required = [
         "latitude",
         "longitude",
         "population",
-    }
+    ]
 
-    missing = required - set(df.columns)
+    missing = [
+        col for col in required
+        if col not in df.columns
+    ]
 
     if missing:
         raise ValueError(
-            "Missing population columns: "
-            + ", ".join(sorted(missing))
+            f"Missing population columns: {missing}"
         )
 
-    df = df[
-        [
-            "latitude",
-            "longitude",
-            "population",
-        ]
-    ].copy()
+    df["latitude"] = pd.to_numeric(
+        df["latitude"],
+        errors="coerce",
+    )
+
+    df["longitude"] = pd.to_numeric(
+        df["longitude"],
+        errors="coerce",
+    )
 
     df["population"] = pd.to_numeric(
         df["population"],
         errors="coerce",
     ).fillna(0)
 
+    df = df.dropna(
+        subset=[
+            "latitude",
+            "longitude",
+        ]
+    )
+
     df = df[df["population"] > 0]
 
     return df.reset_index(drop=True)
 
 
-def build_view_state(df: pd.DataFrame) -> pdk.ViewState:
-
-    latitude = float(df["latitude"].mean())
-    longitude = float(df["longitude"].mean())
-
-    lat_span = (
-        df["latitude"].max()
-        - df["latitude"].min()
-    )
-
-    lon_span = (
-        df["longitude"].max()
-        - df["longitude"].min()
-    )
-
-    span = max(
-        float(lat_span),
-        float(lon_span),
-        0.05,
-    )
-
-    zoom = max(
-        5.0,
-        min(
-            13.0,
-            math.log2(360.0 / span) - 1.5,
-        ),
-    )
-
-    return pdk.ViewState(
-        latitude=latitude,
-        longitude=longitude,
-        zoom=zoom,
-        pitch=0,
-        bearing=0,
-    )
+stores = load_stores()
+population = load_population()
 
 
-try:
-    stores = load_stores()
-    population = load_population()
+# ---------------------------------------------------------
+# Radius
+# ---------------------------------------------------------
 
-except (FileNotFoundError, ValueError, OSError) as exc:
-    st.error(str(exc))
-    st.stop()
+st.sidebar.header("⚙️ Coverage Settings")
 
-
-# -----------------------------
-# Sidebar
-# -----------------------------
-
-st.sidebar.header("⚙️ Radius Settings")
-
-use_custom = st.sidebar.checkbox(
-    "Customize individual radii",
-    value=False,
+radius_km = st.sidebar.slider(
+    "Radius for all locations",
+    min_value=0.5,
+    max_value=20.0,
+    value=5.0,
+    step=0.5,
 )
 
 
-if "radii" not in st.session_state:
-    st.session_state.radii = (
-        stores["radius_km"]
-        .astype(float)
-        .to_dict()
+# ---------------------------------------------------------
+# Calculate population coverage
+# ---------------------------------------------------------
+
+def find_uncovered_population(
+    population,
+    stores,
+    radius_km,
+):
+    """
+    Return only population cells that are outside
+    the radius of EVERY store.
+    """
+
+    pop_lat = np.radians(
+        population["latitude"].to_numpy()
     )
 
+    pop_lon = np.radians(
+        population["longitude"].to_numpy()
+    )
 
-if use_custom:
+    store_lat = np.radians(
+        stores["latitude"].to_numpy()
+    )
 
-    with st.sidebar.form(
-        "radius_form",
-        border=False,
+    store_lon = np.radians(
+        stores["longitude"].to_numpy()
+    )
+
+    radius = radius_km * 1000
+
+    earth_radius = 6_371_000
+
+    # Start by assuming every population point
+    # is uncovered.
+    covered = np.zeros(
+        len(population),
+        dtype=bool,
+    )
+
+    # Process stores one by one.
+    #
+    # This avoids creating one enormous
+    # population × store matrix.
+    for lat, lon in zip(
+        store_lat,
+        store_lon,
     ):
 
-        proposed_radii = {}
+        dlat = pop_lat - lat
+        dlon = pop_lon - lon
 
-        for idx, row in stores.iterrows():
-
-            proposed_radii[idx] = st.slider(
-                f"{row['display_name']} (km)",
-                min_value=0.5,
-                max_value=20.0,
-                value=float(
-                    st.session_state.radii.get(
-                        idx,
-                        row["radius_km"],
-                    )
-                ),
-                step=0.5,
-                key=f"radius_slider_{idx}",
-            )
-
-        apply_radii = st.form_submit_button(
-            "Apply radii",
-            use_container_width=True,
+        a = (
+            np.sin(dlat / 2) ** 2
+            + np.cos(lat)
+            * np.cos(pop_lat)
+            * np.sin(dlon / 2) ** 2
         )
 
-        if apply_radii:
-            st.session_state.radii = proposed_radii
+        distance = (
+            2
+            * earth_radius
+            * np.arcsin(
+                np.sqrt(a)
+            )
+        )
 
-else:
+        covered |= distance <= radius
 
-    st.session_state.radii = (
-        stores["radius_km"]
-        .astype(float)
-        .to_dict()
-    )
+        # Once everything is covered,
+        # no need to process remaining stores.
+        if covered.all():
+            break
+
+    return population.loc[
+        ~covered
+    ].copy()
 
 
-# -----------------------------
-# Store data
-# -----------------------------
+uncovered_population = find_uncovered_population(
+    population,
+    stores,
+    radius_km,
+)
+
+# ---------------------------------------------------------
+# Top 10 most populated uncovered areas
+# ---------------------------------------------------------
+
+top_10_uncovered = (
+    uncovered_population
+    .nlargest(10, "population")
+    .copy()
+)
+
+top_10_uncovered["rank"] = range(
+    1,
+    len(top_10_uncovered) + 1
+)
+
+top_10_uncovered["label"] = (
+    "Top "
+    + top_10_uncovered["rank"].astype(str)
+    + " — "
+    + top_10_uncovered["population"]
+        .map(lambda x: f"{x:,.0f}")
+    + " people"
+)
+
+# ---------------------------------------------------------
+# Store circles
+# ---------------------------------------------------------
 
 store_map = stores.copy()
 
-store_map["radius_km"] = [
-    st.session_state.radii.get(
-        idx,
-        float(row.radius_km),
-    )
-    for idx, row in store_map.iterrows()
-]
+store_map["radius_m"] = radius_km * 1000
 
-store_map["radius_m"] = (
-    store_map["radius_km"] * 1000
-)
-
-store_map["color"] = [
-    CIRCLE_COLORS[
-        i % len(CIRCLE_COLORS)
-    ]
-    for i in range(len(store_map))
-]
-
-store_map["tooltip"] = store_map.apply(
-    lambda r:
-        f"{r['display_name']} — "
-        f"Radius: {r['radius_km']:.1f} km",
-    axis=1,
+store_map["tooltip"] = store_map[
+    "display_name"
+].astype(str) + (
+    f" — Radius: {radius_km:.1f} km"
 )
 
 
-# -----------------------------
-# Population layer
-# -----------------------------
+# ---------------------------------------------------------
+# Population heatmap
+# ---------------------------------------------------------
 
 population_layer = pdk.Layer(
     "HeatmapLayer",
-    data=population,
-    id="population-heatmap",
+
+    data=uncovered_population,
+
+    id="uncovered-population",
+
     get_position=[
         "longitude",
         "latitude",
     ],
+
     get_weight="population",
-    radius_pixels=20,
+
+    radius_pixels=25,
+
     intensity=1.2,
+
     threshold=0.03,
-    opacity=0.65,
-    color_range=POPULATION_COLORS,
+
+    opacity=0.75,
 )
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # Radius circles
-# -----------------------------
+# ---------------------------------------------------------
 
 radius_layer = pdk.Layer(
     "ScatterplotLayer",
+
     data=store_map,
+
     id="store-radii",
+
     get_position=[
         "longitude",
         "latitude",
     ],
+
     get_radius="radius_m",
-    get_fill_color="color",
-    get_line_color="color",
+
+    get_fill_color=[
+        220,
+        20,
+        60,
+        35,
+    ],
+
+    get_line_color=[
+        220,
+        20,
+        60,
+        180,
+    ],
+
     stroked=True,
+
     filled=True,
+
     line_width_min_pixels=2,
-    radius_min_pixels=2,
-    radius_max_pixels=1000,
+
     pickable=True,
 )
 
 
-# -----------------------------
+# ---------------------------------------------------------
 # Store markers
-# -----------------------------
-
-marker_map = store_map.copy()
-
-marker_map["marker_color"] = [
-    [210, 25, 25, 240]
-] * len(marker_map)
-
+# ---------------------------------------------------------
 
 marker_layer = pdk.Layer(
     "ScatterplotLayer",
-    data=marker_map,
+
+    data=store_map,
+
     id="store-markers",
+
     get_position=[
         "longitude",
         "latitude",
     ],
-    get_radius=80,
-    get_fill_color="marker_color",
+
+    get_radius=100,
+
+    get_fill_color=[
+        220,
+        20,
+        20,
+        255,
+    ],
+
     get_line_color=[
         255,
         255,
         255,
         255,
     ],
+
     radius_min_pixels=5,
-    radius_max_pixels=14,
-    line_width_min_pixels=2,
+
+    radius_max_pixels=12,
+
     stroked=True,
+
     filled=True,
+
     pickable=True,
+
     auto_highlight=True,
 )
 
 
-# -----------------------------
-# Build map
-# -----------------------------
+# ---------------------------------------------------------
+# Top 10 uncovered population points
+# ---------------------------------------------------------
+
+top_10_layer = pdk.Layer(
+    "ScatterplotLayer",
+
+    data=top_10_uncovered,
+
+    id="top-10-uncovered",
+
+    get_position=[
+        "longitude",
+        "latitude",
+    ],
+
+    get_radius=500,
+
+    get_fill_color=[
+        255,
+        215,
+        0,
+        255,
+    ],
+
+    get_line_color=[
+        0,
+        0,
+        0,
+        255,
+    ],
+
+    radius_min_pixels=8,
+
+    radius_max_pixels=20,
+
+    line_width_min_pixels=3,
+
+    stroked=True,
+
+    filled=True,
+
+    pickable=True,
+
+    auto_highlight=True,
+)
+
+# ---------------------------------------------------------
+# Map
+# ---------------------------------------------------------
+
+center_lat = stores["latitude"].mean()
+center_lon = stores["longitude"].mean()
+
+
+view_state = pdk.ViewState(
+    latitude=float(center_lat),
+    longitude=float(center_lon),
+    zoom=8,
+    pitch=0,
+    bearing=0,
+)
+
 
 deck = pdk.Deck(
     layers=[
         population_layer,
         radius_layer,
         marker_layer,
+        top_10_layer,
     ],
-    initial_view_state=build_view_state(
-        store_map
-    ),
-    map_style=None,
+    initial_view_state=view_state,
+
     tooltip={
-        "text": "{tooltip}"
+        "text": "{display_name}"
     },
 )
 
 
-# -----------------------------
-# Layout
-# -----------------------------
+# ---------------------------------------------------------
+# Display
+# ---------------------------------------------------------
 
 col1, col2 = st.columns(
-    [3, 2]
+    [3, 1]
 )
+
 
 with col1:
 
     st.pydeck_chart(
         deck,
         width="stretch",
-        height=600,
+        height=650,
     )
 
 
 with col2:
 
-    st.subheader(
-        "📋 Locations & Radii"
+    st.subheader("📊 Coverage")
+
+    total_population = population[
+        "population"
+    ].sum()
+
+    uncovered = uncovered_population[
+        "population"
+    ].sum()
+
+    covered = (
+        total_population
+        - uncovered
     )
+
+    coverage_percent = (
+        covered / total_population * 100
+        if total_population > 0
+        else 0
+    )
+
+    uncovered_percent = (
+        uncovered / total_population * 100
+        if total_population > 0
+        else 0
+    )
+
+    st.metric(
+        "Radius",
+        f"{radius_km:.1f} km",
+    )
+
+    st.metric(
+        "Total population",
+        f"{total_population:,.0f}",
+    )
+
+    st.metric(
+        "Covered population",
+        f"{covered:,.0f}",
+    )
+
+    st.metric(
+        "Uncovered population",
+        f"{uncovered:,.0f}",
+    )
+
+    st.metric(
+        "Coverage",
+        f"{coverage_percent:.1f}%",
+    )
+
+    st.metric(
+        "Uncovered",
+        f"{uncovered_percent:.1f}%",
+    )
+
+    st.divider()
+
+    st.subheader("Locations")
 
     st.dataframe(
         store_map[
             [
                 "display_name",
-                "radius_km",
                 "latitude",
                 "longitude",
             ]
         ].rename(
             columns={
                 "display_name": "Location",
-                "radius_km": "Radius (km)",
+                "latitude": "Latitude",
+                "longitude": "Longitude",
             }
         ),
         use_container_width=True,
         hide_index=True,
     )
 
-    st.caption(
-        f"{len(store_map):,} locations · "
-        f"{len(population):,} population cells"
+    st.divider()
+
+    st.subheader(
+        "🎯 Top 10 Uncovered Areas"
     )
+
+    st.dataframe(
+        top_10_uncovered[
+            [
+                "rank",
+                "latitude",
+                "longitude",
+                "population",
+            ]
+    ].rename(
+        columns={
+            "rank": "Rank",
+            "latitude": "Latitude",
+            "longitude": "Longitude",
+            "population": "Population",
+        }
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
