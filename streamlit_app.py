@@ -57,17 +57,17 @@ try:
         color = CIRCLE_COLORS[idx % len(CIRCLE_COLORS)]
         
         # Add the Radius Circle (meters = km * 1000)
-        folium.Circle(
-            location=[row["latitude"], row["longitude"]],
-            radius=row["radius_km"] * 1000,
-            color=color,
-            fill=True,
-            fill_color=color,
-            fill_opacity=0.15,
-            popup=f"<b>{row['display_name']}</b><br>Radius: {row['radius_km']} km"
-        ).add_to(m)
+        # folium.Circle(
+        #     location=[row["latitude"], row["longitude"]],
+        #     radius=row["radius_km"] * 1000,
+        #     color=color,
+        #     fill=True,
+        #     fill_color=color,
+        #     fill_opacity=0.15,
+        #     popup=f"<b>{row['display_name']}</b><br>Radius: {row['radius_km']} km"
+        # ).add_to(m)
 
-        # Add Marker Pin at Center
+        #Add Marker Pin at Center
         folium.Marker(
             location=[row["latitude"], row["longitude"]],
             popup=f"<b>{row['display_name']}</b><br>Radius: {row['radius_km']} km",
