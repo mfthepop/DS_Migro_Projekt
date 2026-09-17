@@ -22,7 +22,7 @@ def load_data():
 
 try:
     df = load_data()
-    agg_plot = gpd.read_file("population_500by500_grid.gpkg")
+    #agg_plot = gpd.read_file("population_500by500_grid.gpkg")
 
     # 1. Sidebar Controls
     st.sidebar.header("⚙️ Radius Settings")
@@ -75,17 +75,17 @@ try:
             icon=folium.Icon(color="red", icon="info-sign")
         ).add_to(m)
 
-    agg_plot_reset = agg_plot.reset_index()
-    folium.Choropleth(
-        geo_data=agg_plot.geometry.__geo_interface__,
-        data=agg_plot_reset,
-        columns=[agg_plot_reset.columns[0], "population"],  # [index/ID column, value column]
-        key_on="feature.id",  # Matches the feature ID in geojson
-        fill_color="YlOrRd",  # Choose a color palette (e.g., 'Viridis', 'YlGnBu', 'YlOrRd')
-        fill_opacity=0.6,     # Equivalent to opacity=0.6
-        line_opacity=0.2,
-        legend_name="Population"
-        ).add_to(m)
+    #agg_plot_reset = agg_plot.reset_index()
+    # folium.Choropleth(
+    #     geo_data=agg_plot.geometry.__geo_interface__,
+    #     data=agg_plot_reset,
+    #     columns=[agg_plot_reset.columns[0], "population"],  # [index/ID column, value column]
+    #     key_on="feature.id",  # Matches the feature ID in geojson
+    #     fill_color="YlOrRd",  # Choose a color palette (e.g., 'Viridis', 'YlGnBu', 'YlOrRd')
+    #     fill_opacity=0.6,     # Equivalent to opacity=0.6
+    #     line_opacity=0.2,
+    #     legend_name="Population"
+    #     ).add_to(m)
 
     # 4. Render Layout
     col1, col2 = st.columns([3, 2])
