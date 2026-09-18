@@ -253,7 +253,7 @@ def deactivate_other_checkboxes():
     st.session_state.checkbox_migros_only = False
 
 setting_with_existing_competitors = st.sidebar.checkbox(
-    "With existing competitors",
+    "With existing small competitors",
     value=False,
     key="checkbox_with_existing_competitors",
     on_change=deactivate_other_checkboxes
