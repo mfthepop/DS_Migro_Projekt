@@ -1055,15 +1055,14 @@ with col2:
                 hide_index=True,
             )
         else: # With existing competitors <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-            #top_10_places=get_places_for_small_stores(population,stores,competition_companies,min_distance_km)
-            #top_10_places_ready = top_10_places.reset_index()
             top_10['rank']=1+top_10.index
+            top_10_places_ready['rank']=1+top_10_places_ready.index
+            top_10_places_ready=top_10_places_ready[["rank","population","nearest_shops","opportunity_score"]]
             display_table = (
                                             top_10[
                                                 [
                                                     "rank",
                                                     "population",
-                                                    #"migros_distance_km",
                                                     "nearest_shops",
                                                     "opportunity_score",
                                                 ]
@@ -1072,14 +1071,13 @@ with col2:
                                                 columns={
                                                     "rank": "Rank",
                                                     "population": "Population",
-                                                    #"migros_distance_km": "Migros distance (km)",
                                                     "nearest_shops": "Competitors",
                                                     "opportunity_score": "Opportunity",
                                                 }
                                             )
                                         )
             st.dataframe(
-                            top_10_places_ready.drop(columns=["index","geometry","norm_pop","norm_comp"]),
+                            top_10_places_ready,
                             use_container_width=True,
                             hide_index=True,
                         )
