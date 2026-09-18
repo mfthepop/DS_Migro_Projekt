@@ -4,3 +4,4 @@ pandas>=2.3,<3
 numpy>=2,<3
 pyarrow>=18,<24
 folium
+geopandas
