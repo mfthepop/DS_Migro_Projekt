@@ -321,6 +321,7 @@ elif setting_with_existing_competitors: #<<<<<<<<<<<<<<<<<SECOND MODEL<<<<<<<<<<
     ]
     top_10_places=get_places_for_small_stores(population,stores,competition_companies,min_distance_km)
     top_10_places_ready = top_10_places.reset_index()
+    top_10_places_ready['opportunity_score']=(top_10_places_ready['opportunity_score'].round(4))*100 
 else:
 
     competition_companies = [
@@ -516,6 +517,8 @@ def calculate_opportunity(
         competitor_count
     )
 
+    result["migros_distance_km_formatted"] = result["migros_distance_km"].map(lambda x: f"{x:.3f}")
+    
 
     # -----------------------------------------------------
     # YOUR EXACT SCORE
@@ -529,7 +532,7 @@ def calculate_opportunity(
             + result["competitor_count"]
         )
     )
-
+    result["opportunity_formatted"] = result["opportunity"].map(lambda x: f"{x:.3f}")
 
     return result
 
@@ -925,13 +928,10 @@ if not setting_with_existing_competitors:
         "html":
             "<b>{display}</b><br/>"
             "Population: {population}<br/>"
-            "Migros distance: "
-            "{migros_distance_km} km<br/>"
-            "Competitors: "
-            "{competitor_count}<br/>"
-            "Opportunity: "
-            "{opportunity}"
-    }
+            "Migros distance: {migros_distance_km_formatted} km<br/>"
+            "Competitors: {competitor_count}<br/>"
+            "Opportunity: {opportunity_formatted}"
+}
 else:
     tooltip={
             "html":
