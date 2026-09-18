@@ -1062,7 +1062,6 @@ with col2:
                                             top_10[
                                                 [
                                                     "rank",
-                                                    "town",
                                                     "population",
                                                     #"migros_distance_km",
                                                     "nearest_shops",
@@ -1072,7 +1071,6 @@ with col2:
                                             .rename(
                                                 columns={
                                                     "rank": "Rank",
-                                                    "town": "Town",
                                                     "population": "Population",
                                                     #"migros_distance_km": "Migros distance (km)",
                                                     "nearest_shops": "Competitors",
