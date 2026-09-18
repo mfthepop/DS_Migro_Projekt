@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+from geopy.geocoders import Nominatim
 
 from ten_small_competitors_adapted import get_places_for_small_stores
 # =========================================================
@@ -30,6 +31,39 @@ st.set_page_config(
 )
 
 st.title(" Migros Location Opportunity Analysis")
+
+
+@st.cache_data
+def get_town_cached(topten):
+    return get_town(topten)
+
+@st.cache_data
+def reverse_geocode_town(lat, lon):
+    geolocator = Nominatim(user_agent="migros_opportunity_app")
+
+    try:
+        location = geolocator.reverse(
+            (lat, lon),
+            exactly_one=True
+        )
+
+        if location:
+            address = location.raw.get("address", {})
+            return (
+                address.get("town")
+                or address.get("municipality")
+                or address.get("village")
+                or address.get("city")
+                or address.get("suburb")
+                or "Unknown"
+            )
+
+    except Exception:
+        pass
+
+    return "Unknown"
+
+
 
 
 # =========================================================
@@ -658,7 +692,13 @@ top_10 = select_top_10(
     opportunities,
     min_distance_km,
 )
-
+top_10["town"] = top_10.apply(
+    lambda row: reverse_geocode_town(
+        row["latitude"],
+        row["longitude"]
+    ),
+    axis=1
+)
 
 # =========================================================
 # STATISTICS
@@ -989,6 +1029,7 @@ with col2:
                                 top_10[
                                     [
                                         "rank",
+                                        "town",
                                         "population",
                                         "migros_distance_km",
                                         "competitor_count",
@@ -1021,6 +1062,7 @@ with col2:
                                             top_10[
                                                 [
                                                     "rank",
+                                                    "town",
                                                     "population",
                                                     #"migros_distance_km",
                                                     "nearest_shops",
@@ -1030,6 +1072,7 @@ with col2:
                                             .rename(
                                                 columns={
                                                     "rank": "Rank",
+                                                    "town": "Town",
                                                     "population": "Population",
                                                     #"migros_distance_km": "Migros distance (km)",
                                                     "nearest_shops": "Competitors",
