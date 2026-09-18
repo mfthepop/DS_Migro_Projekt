@@ -29,7 +29,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📍 Migros Location Opportunity Analysis")
+st.title(" Migros Location Opportunity Analysis")
 
 
 # =========================================================
@@ -166,7 +166,7 @@ except Exception as exc:
 # =========================================================
 
 st.sidebar.header(
-    "⚙️ Analysis Settings"
+    "Analysis Settings"
 )
 
 
@@ -178,7 +178,7 @@ radius_km = st.sidebar.slider(
     "Competitor radius",
     min_value=0.5,
     max_value=20.0,
-    value=1.0,
+    value=3.0,
     step=0.5,
 )
 
@@ -944,36 +944,36 @@ with col1:
 
 with col2:
 
+    # st.subheader(
+    #     "Analysis"
+    # )
+
+    # st.metric(
+    #     "Competitor radius",
+    #     f"{radius_km:.1f} km",
+    # )
+
+    # st.metric(
+    #     "Population cells",
+    #     f"{len(population):,}",
+    # )
+
+    # st.metric(
+    #     "Total population",
+    #     f"{total_population:,.0f}",
+    # )
+
+    # st.metric(
+    #     "Top 10 locations",
+    #     str(len(top_10)),
+    # )
+
+
+    # st.divider()
+
+
     st.subheader(
-        "📊 Analysis"
-    )
-
-    st.metric(
-        "Competitor radius",
-        f"{radius_km:.1f} km",
-    )
-
-    st.metric(
-        "Population cells",
-        f"{len(population):,}",
-    )
-
-    st.metric(
-        "Total population",
-        f"{total_population:,.0f}",
-    )
-
-    st.metric(
-        "Top 10 locations",
-        str(len(top_10)),
-    )
-
-
-    st.divider()
-
-
-    st.subheader(
-        "🎯 Top 10 Opportunities"
+        " Top 10 Opportunities"
     )
 
     if top_10.empty:
