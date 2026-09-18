@@ -1055,32 +1055,41 @@ with col2:
                 hide_index=True,
             )
         else: # With existing competitors <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-            top_10['rank']=1+top_10.index
-            top_10_places_ready['rank']=1+top_10_places_ready.index
-            top_10_places_ready=top_10_places_ready[["rank","population","nearest_shops","opportunity_score"]]
-            display_table = (
-                                            top_10[
-                                                [
-                                                    "rank",
-                                                    "population",
-                                                    "nearest_shops",
-                                                    "opportunity_score",
-                                                ]
-                                            ]
-                                            .rename(
-                                                columns={
-                                                    "rank": "Rank",
-                                                    "population": "Population",
-                                                    "nearest_shops": "Competitors",
-                                                    "opportunity_score": "Opportunity",
-                                                }
-                                            )
-                                        )
-            st.dataframe(
-                            top_10_places_ready,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
+                    top_10['rank']=1+top_10.index
+                    top_10_places_ready['rank'] = 1 + top_10_places_ready.index
+                    top_10_places_ready["town"] = top_10_places_ready.apply(
+                        lambda row: reverse_geocode_town(
+                            row["latitude"],
+                            row["longitude"]
+                        ),
+                        axis=1
+                    )
+                    top_10_places_ready=top_10_places_ready[["rank","town","population","nearest_shops","opportunity_score"]]
+                    display_table = (
+                                                    top_10[
+                                                        [
+                                                            "rank",
+                                                            "town",
+                                                            "population",
+                                                            "nearest_shops",
+                                                            "opportunity_score",
+                                                        ]
+                                                    ]
+                                                    .rename(
+                                                        columns={
+                                                            "rank": "Rank",
+                                                            "town": "Town",
+                                                            "population": "Population",
+                                                            "nearest_shops": "Competitors",
+                                                            "opportunity_score": "Opportunity",
+                                                        }
+                                                    )
+                                                )
+                    st.dataframe(
+                                    top_10_places_ready,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
 
 
     st.caption(
