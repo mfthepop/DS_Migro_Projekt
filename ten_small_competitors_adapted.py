@@ -13,14 +13,23 @@ def aggregate_competitor_metrics(group):
     total_stores = group["company"].dropna().count()
     return pd.Series({"nearest_shops": total_stores, "shop_names": unique_brands})
 
-def get_places_for_small_stores(agg_plot_reset, df_migros_and_competitors, allowed_competitors, r_distance_km):
+def get_places_for_small_stores(agg_plot, df_migros_and_competitors, allowed_competitors, r_distance_km):
 
     # ==============================================================================
-    # 1. GEOSPATIAL DATA PREPARATION
+    # 1. GEOSPATIAL DATA PREPARATION (ADAPTED FOR LAT/LON POPULATION POINTS)
     # ==============================================================================
 
-    # Convert the population DataFrame to a GeoDataFrame using the standard WGS84 coordinate system
-    gdf_pop = gpd.GeoDataFrame(agg_plot_reset, geometry="geometry", crs="EPSG:4326")
+    # Create temporary Point geometries for the population center coordinates
+    pop_points = [Point(xy) for xy in zip(agg_plot["longitude"], agg_plot["latitude"])]
+    gdf_pop_points = gpd.GeoDataFrame(agg_plot, geometry=pop_points, crs="EPSG:4326")
+
+    # CRITICAL: Transform points to Swiss Metric (2056) to build perfect 500x500m squares.
+    # We buffer by 250m with cap_style=3 (square) to generate the original 500x500m polygons.
+    gdf_pop_m_temp = gdf_pop_points.to_crs("EPSG:2056")
+    gdf_pop_m_temp["geometry"] = gdf_pop_m_temp["geometry"].buffer(250, cap_style=3)
+    
+    # Bring the newly generated square grids back to WGS84 to align with the rest of your pipeline
+    gdf_pop = gdf_pop_m_temp.to_crs("EPSG:4326")
 
     # Build Point geometries for the stores using their Longitude and Latitude columns
     geometry_stores = [
@@ -79,8 +88,7 @@ def get_places_for_small_stores(agg_plot_reset, df_migros_and_competitors, allow
     # 4. FILTERING & INITIAL SCORING
     # ==============================================================================
 
-    # CRITICAL FILTER: Keep only locations that have at least 1 competitor
-    #gdf_valid_zones = gdf_pop_m[gdf_pop_m["nearest_shops"] >= 1].copy()
+    # CRITICAL FILTER: Keep only locations that have at least 1 competitor and no Migros
     gdf_valid_zones = gdf_pop_m[(gdf_pop_m['nearest_shops'] >= 1) & (~gdf_pop_m['shop_names'].str.contains('Migros', na=False))].copy()
 
     # Compute initial opportunity score before the distance exclusion loop
@@ -127,78 +135,14 @@ def get_places_for_small_stores(agg_plot_reset, df_migros_and_competitors, allow
     top_10_places["latitude"] = top_10_places["centroid"].y
     top_10_places["longitude"] = top_10_places["centroid"].x
 
+    # CRITICAL FIX: Clean the secondary geometry column inside the method to guarantee clean JSON serialization
+    if 'centroid' in top_10_places.columns:
+        top_10_places = top_10_places.drop(columns=['centroid'])
+
     return top_10_places
 
 def load_data():
     df = pd.read_csv("Migros_and_competitors_stores_CH.csv")
-    # Set default radius if the column is missing in CSV
     if "radius_km" not in df.columns:
         df["radius_km"] = 5.0
     return df
-
-# ==============================================================================
-# HOW TO USE THE functions above
-# ==============================================================================
-
-#Prepare data and parameters to call 'get_places_for_small_stores' to get the dataframe with the positions
-df_migros_and_competitors = load_data()
-agg_plot = gpd.read_file("population_500by500_grid.gpkg")
-agg_plot_reset = agg_plot.reset_index()
-#It is necessary to include Migros as allowed competitors
-allowed_competitors = ["Migros", "Denner", "Lidl", "ALDI", "Vogl", "Spar"]#, "Aligro"]
-r_distance_km=3 # Define the minimum clearance distance R allowed between the top selected stores (in Kilometers)
-
-#Get the dataframe 
-top_10_places = get_places_for_small_stores(agg_plot_reset, df_migros_and_competitors, allowed_competitors,r_distance_km)
-top_10_places_ready = top_10_places.reset_index()
-
-# CRITICAL FIX: Drop the secondary 'centroid' geometry column to avoid serialization errors
-if 'centroid' in top_10_places_ready.columns:
-    top_10_places_ready = top_10_places_ready.drop(columns=['centroid'])
-
-# ==============================================================================
-# FOLIUM INTERACTIVE CHOROPLETH GENERATION
-# ==============================================================================
-
-#Drawing data. In this case, just as example, the graphs is saved in a .html file
-
-map_center_lat = top_10_places_ready.loc[0, 'latitude']
-map_center_lon = top_10_places_ready.loc[0, 'longitude']
-
-m = folium.Map(
-    location=[map_center_lat, map_center_lon],
-    zoom_start=11,
-    tiles="cartodbpositron",
-)
-
-# This will now execute perfectly without any TypeError
-geojson_features = json.loads(top_10_places_ready.to_json())
-
-folium.Choropleth(
-    geo_data=geojson_features,
-    name="Top 10 Spaced Expansion Sites",
-    data=top_10_places_ready,
-    columns=["index", "population"],
-    key_on="feature.properties.index",
-    fill_color="YlOrRd",
-    fill_alpha=0.6,
-    line_alpha=0.8,
-    legend_name="Total Population within 500x500m Grid",
-    highlight=True,
-).add_to(m)
-
-# Drop marker points onto the map
-for rank_idx, row in top_10_places_ready.iterrows():
-    tooltip_html = f"""
-    <strong>Rank Position:</strong> #{rank_idx + 1}<br>
-    <strong>Population Density:</strong> {row['population']} residents<br>
-    <strong>Competitors in Radius:</strong> {row['nearest_shops']}<br>
-    <strong>Active Brands:</strong> {row['shop_names']}
-    """
-    folium.Marker(
-        location=[row["latitude"], row["longitude"]],
-        popup=folium.Popup(tooltip_html, max_width=300),
-        icon=folium.Icon(color="purple", icon="store", prefix="fa"),
-    ).add_to(m)
-
-m.save("top_10_spaced_expansion_map.html")

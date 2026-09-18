@@ -5,10 +5,11 @@ import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-
+from ten_small_competitors_adapted import get_places_for_small_stores
 # =========================================================
 # CONFIGURATION
 # =========================================================
+top_10_places_ready=pd.DataFrame() 
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -143,6 +144,17 @@ try:
     stores = load_stores()
     population = load_population()
 
+    #<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<SECOND MODEL<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    #allowed_competitors = ["Migros", "Denner", "Lidl", "ALDI", "Vogl", "Spar"]#, "Aligro"]
+    #r_distance_km=3 # Define the minimum clearance distance R allowed between the top selected stores (in Kilometers)
+    #top_10_places=get_places_for_small_stores(population,stores,allowed_competitors,r_distance_km)
+    #top_10_places_ready = top_10_places.reset_index()
+    #<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<SECOND MODEL<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+    # CRITICAL FIX: Drop the secondary 'centroid' geometry column to avoid serialization errors
+    #if 'centroid' in top_10_places_ready.columns:
+    #    top_10_places_ready = top_10_places_ready.drop(columns=['centroid'])
+
 except Exception as exc:
 
     st.error(str(exc))
@@ -172,6 +184,8 @@ radius_km = st.sidebar.slider(
 
 radius_m = radius_km * 1000
 
+def deactivate_with_existing_competitors():
+    st.session_state.checkbox_with_existing_competitors=False
 
 # ---------------------------------------------------------
 # Migros / Denner setting
@@ -180,6 +194,8 @@ radius_m = radius_km * 1000
 setting_migros_only = st.sidebar.checkbox(
     "Migros only",
     value=True,
+    key="checkbox_migros_only",
+    on_change=deactivate_with_existing_competitors
 )
 
 
@@ -190,8 +206,24 @@ setting_migros_only = st.sidebar.checkbox(
 setting_all_competitors = st.sidebar.checkbox(
     "All competitors",
     value=True,
+    key="checkbox_all_competitors",
+    on_change=deactivate_with_existing_competitors
 )
 
+# ---------------------------------------------------------
+# Second model based on existent competitors stores <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<SECOND MODEL<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# ---------------------------------------------------------
+
+def deactivate_other_checkboxes():
+    st.session_state.checkbox_all_competitors = False
+    st.session_state.checkbox_migros_only = False
+
+setting_with_existing_competitors = st.sidebar.checkbox(
+    "With existing competitors",
+    value=False,
+    key="checkbox_with_existing_competitors",
+    on_change=deactivate_other_checkboxes
+)
 
 # ---------------------------------------------------------
 # Minimum distance between Top 10
@@ -244,6 +276,17 @@ if setting_all_competitors:
             "Denner"
         )
 
+elif setting_with_existing_competitors: #<<<<<<<<<<<<<<<<<SECOND MODEL<<<<<<<<<<<<<<<
+    competition_companies = [
+        "Migros", 
+        "Denner", 
+        "Lidl", 
+        "ALDI", 
+        "Vogl", 
+        "Spar"
+    ]
+    top_10_places=get_places_for_small_stores(population,stores,competition_companies,min_distance_km)
+    top_10_places_ready = top_10_places.reset_index()
 else:
 
     competition_companies = [
@@ -766,8 +809,11 @@ store_marker_layer = pdk.Layer(
 
 
 # =========================================================
-# TOP 10 HIGHLIGHT LAYER
+# TOP 10 HIGHLIGHT LAYER 
 # =========================================================
+
+if setting_with_existing_competitors: #<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    top_10=top_10_places_ready
 
 top_10_layer = pdk.Layer(
     "ScatterplotLayer",
@@ -833,6 +879,28 @@ view_state = pdk.ViewState(
     bearing=0,
 )
 
+tooltip={} #<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+if not setting_with_existing_competitors:
+    tooltip={
+        "html":
+            "<b>{display}</b><br/>"
+            "Population: {population}<br/>"
+            "Migros distance: "
+            "{migros_distance_km} km<br/>"
+            "Competitors: "
+            "{competitor_count}<br/>"
+            "Opportunity: "
+            "{opportunity}"
+    }
+else:
+    tooltip={
+            "html":
+                "Population: {population}<br/>"
+                "Competitor: "
+                "{shop_names}<br/>"
+                "Opportunity score: "
+                "{opportunity_score}<br/>"
+        }
 
 deck = pdk.Deck(
     layers=[
@@ -844,17 +912,7 @@ deck = pdk.Deck(
 
     initial_view_state=view_state,
 
-    tooltip={
-        "html":
-            "<b>{display}</b><br/>"
-            "Population: {population}<br/>"
-            "Migros distance: "
-            "{migros_distance_km} km<br/>"
-            "Competitors: "
-            "{competitor_count}<br/>"
-            "Opportunity: "
-            "{opportunity}"
-    },
+    tooltip=tooltip,
 )
 
 
@@ -925,37 +983,65 @@ with col2:
         )
 
     else:
-
-        display_table = (
-            top_10[
-                [
-                    "rank",
-                    "population",
-                    "migros_distance_km",
-                    "competitor_count",
-                    "opportunity",
-                ]
-            ]
-            .rename(
-                columns={
-                    "rank": "Rank",
-                    "population": "Population",
-                    "migros_distance_km":
-                        "Migros distance (km)",
-                    "competitor_count":
-                        "Competitors",
-                    "opportunity":
-                        "Opportunity",
-                }
+        #<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< #Normal cases: Migros only and All competitors
+        if not setting_with_existing_competitors:
+            display_table = (
+                                top_10[
+                                    [
+                                        "rank",
+                                        "population",
+                                        "migros_distance_km",
+                                        "competitor_count",
+                                        "opportunity",
+                                    ]
+                                ]
+                                .rename(
+                                    columns={
+                                        "rank": "Rank",
+                                        "population": "Population",
+                                        "migros_distance_km":
+                                            "Migros distance (km)",
+                                        "competitor_count":
+                                            "Competitors",
+                                        "opportunity":
+                                            "Opportunity",
+                                    }
+                                )
+                            )
+            st.dataframe(
+                display_table,
+                use_container_width=True,
+                hide_index=True,
             )
-        )
-
-
-        st.dataframe(
-            display_table,
-            use_container_width=True,
-            hide_index=True,
-        )
+        else: # With existing competitors <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+            #top_10_places=get_places_for_small_stores(population,stores,competition_companies,min_distance_km)
+            #top_10_places_ready = top_10_places.reset_index()
+            top_10['rank']=1+top_10.index
+            display_table = (
+                                            top_10[
+                                                [
+                                                    "rank",
+                                                    "population",
+                                                    #"migros_distance_km",
+                                                    "nearest_shops",
+                                                    "opportunity_score",
+                                                ]
+                                            ]
+                                            .rename(
+                                                columns={
+                                                    "rank": "Rank",
+                                                    "population": "Population",
+                                                    #"migros_distance_km": "Migros distance (km)",
+                                                    "nearest_shops": "Competitors",
+                                                    "opportunity_score": "Opportunity",
+                                                }
+                                            )
+                                        )
+            st.dataframe(
+                            top_10_places_ready.drop(columns=["index","geometry","norm_pop","norm_comp"]),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
 
     st.caption(
